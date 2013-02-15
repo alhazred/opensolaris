@@ -1,0 +1,213 @@
+#!/usr/bin/ksh
+#
+# CDDL HEADER START
+#
+# The contents of this file are subject to the terms of the
+# Common Development and Distribution License (the "License").
+# You may not use this file except in compliance with the License.
+#
+# You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
+# or http://www.opensolaris.org/os/licensing.
+# See the License for the specific language governing permissions
+# and limitations under the License.
+#
+# When distributing Covered Code, include this CDDL HEADER in each
+# file and include the License file at usr/src/OPENSOLARIS.LICENSE.
+# If applicable, add the following below this CDDL HEADER, with the
+# fields enclosed by brackets "[]" replaced with your own identifying
+# information: Portions Copyright [yyyy] [name of copyright owner]
+#
+# CDDL HEADER END
+#
+# Copyright 2007 Sun Microsystems, Inc.  All rights reserved.
+# Use is subject to license terms.
+#
+# Script to install MilaX to ZFS 
+# Alexander R. Eremin, April 4 2008.
+# 07 July 2008 Sparc version
+#
+#
+# Thanks to Tim Foster for basic zfs-boot script 
+#
+
+# Make sure only root can run our script
+if [ "$(id -u)" != "0" ]; then
+    echo "This script must be run as root" 
+    exit 1
+fi
+      
+
+# check arguments
+if [ "$#" -lt 2 ] || [ $1 == "-h" ] || [ $1 == "--help" ]
+then
+  echo "Usage : zfsinstall <root_slice> <swap_slice>"
+  echo "eg. ./zfsinstall c0t0d0s0 c0t0d0s1"
+  exit 1
+fi
+
+#
+# Examine memory requirements
+#
+
+# get available virtual memory in megabytes
+VIRTMEM=`/sbin/sysmem`; VIRTMEM=`expr $VIRTMEM / 1024`
+
+# get total physical memory in megabytes
+PHYSMEM=`/usr/sbin/prtconf | grep '^Memory size: ' | \
+                sed -e 's/^Memory size: //' -e 's/ .*$//' `
+
+MEMUNIT=`/usr/sbin/prtconf | grep '^Memory size: ' | \
+                sed -e 's/^Memory size: [0-9][0-9]* //' `
+
+case $MEMUNIT in
+        Kilobytes) PHYSMEM=`expr $PHYSMEM / 1024` ;;
+        Megabytes) ;;
+        Gigabytes) PHYSMEM=`expr $PHYSMEM \* 1024` ;;
+        Terabytes) PHYSMEM=`expr $PHYSMEM \* 1024 \* 1024` ;;
+        *)         PHYSMEM=0 ;;
+esac
+
+export PHYSMEM
+MIN_INSTALL_PHYSMEM=256
+
+if [ "$PHYSMEM" -lt "$MIN_INSTALL_PHYSMEM" ] ; then
+	echo "This installer requires a minimum of $MIN_INSTALL_PHYSMEM MB of physical memory"
+	echo "to install.  This system only has $PHYSMEM MB of physical memory."
+	echo
+	echo "Exiting to shell"
+	exit
+fi
+
+
+# change these to use different pool/fs names
+home=/usr/dss/share/hdinstall
+ROOT_POOL=tank
+ROOT_FILESYSTEM=rootfs
+
+if [ -z "${ROOT_FS}" ]
+then
+  #  make our root pool and file system
+  GOT_ROOT=$( /usr/sbin/zpool list | grep $ROOT_POOL )
+  if [ -z "${GOT_ROOT}" ]
+  then
+     /usr/sbin/zpool create -f ${ROOT_POOL} $1
+     if [ $? != 0 ]
+     then
+        echo "Sorry, unable to create root pool with zpool options $1. Exiting now."
+        exit 1
+     fi
+  else
+     echo "Sorry ZFS pool \"${ROOT_POOL}\" already exists. Exiting now."
+     exit 1
+  fi
+  /usr/sbin/zfs create ${ROOT_POOL}/${ROOT_FILESYSTEM}
+  ROOT_FS="${ROOT_POOL}/${ROOT_FILESYSTEM}"
+fi
+
+# work out 
+ROOT_POOL=$( echo $ROOT_FS | awk -F/ '{print $1}' )
+
+/usr/sbin/zfs set mountpoint=legacy $ROOT_FS
+ 
+if [ ! -d /zfsroot ]
+then
+   mkdir /zfsroot
+else
+   echo "Sorry /zfsroot already exists : exiting now in case we overwrite data."
+   exit 1
+fi
+mount -F zfs $ROOT_FS /zfsroot
+
+if [ $? != 0 ]
+then
+   echo "Unable to mount ZFS root filesystem on /zfsroot. Exiting now."
+   exit 1
+fi
+
+# start copying main data over to it
+echo "Starting to copy data from UFS root to /zfsroot - this may take some time."
+cd /
+find . -xdev -depth -print | cpio -pvdm /zfsroot 2>&1 > /dev/null
+mkdir -p /zfsroot/alex
+cd /alex
+find . -xdev -depth -print | cpio -pvdm /zfsroot/alex 2>&1 > /dev/null
+mkdir -p /zfsroot/root
+cd /root
+find . -xdev -depth -print | cpio -pvdm /zfsroot/root 2>&1 > /dev/null
+
+mkdir -p /zfsroot/usr
+cd /usr
+find . -xdev -depth -print | cpio -pvdm /zfsroot/usr 2>&1 > /dev/null
+
+mkdir -p /zfsroot/system/object
+mkdir -p /zfsroot/system/contract
+mkdir -p /zfsroot/tmp
+mkdir -p /zfsroot/proc
+mkdir -p /zfsroot/var/run
+
+chmod 555 /zfsroot/system/object
+chmod 555 /zfsroot/system/contract
+chmod 555 /zfsroot/proc
+chmod 777 /zfsroot/tmp
+chmod 755 /zfsroot/etc/svc/volatile
+chmod 755 /zfsroot/var/run
+chmod 755 /zfsroot/usr
+chmod 755 /zfsroot/alex
+chmod 755 /zfsroot/root
+chown -R alex:adm /zfsroot/alex
+
+# now populate the devices and /dev directories in /zfsroot
+# do this by lofs mounting / and pulling the files directly
+mkdir -p /zfs-root-tmp.$$
+mount -F lofs -o nosub / /zfs-root-tmp.$$
+(cd /zfs-root-tmp.$$; tar cf - devices dev ) | (cd /zfsroot; tar xfp -) 2>&1 > /dev/null
+cd /
+umount /zfs-root-tmp.$$
+rm -rf /zfs-root-tmp.$$
+
+cd /dev                                                                                                       
+tar cf - . | (cd /zfsroot/dev ; tar xfp -)                                                                        
+cd /devices                                                                                                   
+tar cf - . | (cd /zfsroot/devices ; tar xfp -)    
+# copy last etc
+cd /etc
+tar cf - . | (cd /zfsroot/etc ; tar xfp -) 2>&1 > /dev/null
+
+# rebuild svc at first boot 
+rm -f /zfsroot/var/svc/manifest/system/filesystem/live-root-fs.xml
+rm -f /zfsroot/var/svc/manifest/system/filesystem/live-root-fs.xml
+rm -f /zfsroot/var/svc/manifest/system/filesystem/usr-fs.xml
+rm -f /zfsroot/var/svc/manifest/system/dss-sysidtool.xml
+rm -f /zfsroot/etc/system
+cp $home/misc/root-fs.xml /zfsroot/var/svc/manifest/system/filesystem/
+cp $home/misc/usr-fs.xml /zfsroot/var/svc/manifest/system/filesystem/
+cp $home/misc/sysidtool.xml /zfsroot/var/svc/manifest/system/
+cp $home/misc/system /zfsroot/etc/
+cp /lib/svc/seed/global.db /zfsroot/etc/svc/repository.db
+
+# copy vfstab
+cp $home/misc/vfstab /zfsroot/etc/vfstab
+
+
+ROOT_DSK=$(df -h / | tail -1 | awk '{print $1}')
+ROOT_RDSK=$(echo $ROOT_DSK | sed -e 's/dsk/rdsk/g')
+
+echo "Updating vfstab"
+echo "/dev/dsk/$2	-       -       swap    -       no      -"  >> /zfsroot/etc/vfstab
+echo "${ROOT_FS}	-	/	zfs	-	no	-"  >> /zfsroot/etc/vfstab
+
+# Update bootarchive, and set the bootfs property on the root pool
+echo "etc/zfs/zpool.cache" >> /zfsroot/boot/solaris/filelist.ramdisk
+zpool set bootfs=$ROOT_FS $ROOT_POOL
+echo "Updating boot-archive"
+/usr/sbin/bootadm update-archive -R /zfsroot 2>&1 > /dev/null
+
+if [ -e /dev/rdsk/$1 ]
+    then
+	echo "Installing zfs bootblk on /dev/rdsk/$1"
+	/usr/sbin/installboot -F zfs /platform/`uname -m`/lib/fs/zfs/bootblk /dev/rdsk/$1
+fi
+echo "###################################################"
+echo
+echo "MilaX now installed on zfs."
+

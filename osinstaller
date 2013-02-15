@@ -1,0 +1,472 @@
+#!/usr/bin/bash
+#
+# CDDL HEADER START
+#
+# The contents of this file are subject to the terms of the
+# Common Development and Distribution License (the "License").
+# You may not use this file except in compliance with the License.
+#
+# You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
+# or http://www.opensolaris.org/os/licensing.
+# See the License for the specific language governing permissions
+# and limitations under the License.
+#
+# When distributing Covered Code, include this CDDL HEADER in each
+# file and include the License file at usr/src/OPENSOLARIS.LICENSE.
+# If applicable, add the following below this CDDL HEADER, with the
+# fields enclosed by brackets "[]" replaced with your own identifying
+# information: Portions Copyright [yyyy] [name of copyright owner]
+#
+# CDDL HEADER END
+#
+# Copyright 2007 Sun Microsystems, Inc.  All rights reserved.
+# Use is subject to license terms.
+#
+# Script to install minimal OpenSolaris over network
+# by Alexander R. Eremin <eremin@milax.org> 
+
+PATH=/sbin:/usr/sbin:/usr/bin:$PATH
+export PATH
+
+PART=/tmp/part.$$
+SETACT=/tmp/setact.$$
+NUMSECT=/tmp/numsect.$$
+MINIMAL_SIZE=1024
+ROOT_POOL=rpool
+ROOT_FILESYSTEM=opensolaris 
+ZFSROOT=/zfsroot
+TIMEZONE=TZ=US/Eastern 
+HOSTNAME=opensolaris
+declare -a DISKLIST
+
+# preparing partition 
+preparepart() {
+
+dev=$1
+dsk=$2
+acyls=$(prtvtoc $dsk | awk '/accessible/{print $2 }')
+cyls=$((acyls - 1))
+format $dev >/dev/null <<EOF
+partition
+0
+root
+wm
+
+${cyls}e
+label
+
+y
+EOF
+
+}
+
+# get partition info
+getpart() {
+
+	fdisk -W "$PART" /dev/rdsk/$1 
+	cat "$PART"|grep -v '^*'|grep '[0-9]' 
+	rm -f "$PART"
+}
+
+# check Solaris2 partition
+checkpart() {
+
+	disk=$1
+	exist=1                                                                                                                 
+	for item in $(getpart $disk | awk '{print $1}') 
+	do
+	    if [[ "$item" == 191 ]]; then
+	    exist=0
+	    fi
+	done
+	return $exist                                                                                                                 
+			                                                                                                                                   
+}                 
+
+# creating ZFS pool, installing packages and configuring system
+zfsinstall() {
+
+	dev=$1
+	dsk=/dev/dsk/$dev                                                                                               
+	rdsk=/dev/rdsk/$dev   
+	preparepart $dev $dsk
+
+	scdev=$(echo $dsk|sed -e 's/p0/s0/')                                                                          
+	sbdev=$(echo $rdsk|sed -e 's/p0/s0/')                                                                    
+
+	# Ensure we have things unmounted                                                                             
+	umount -f $scdev 2>/dev/null >/dev/null                                                                                            
+                                                                                                              
+	if [[ -z "${ROOT_FS}" ]]                                                                                        
+	then                                                                                                          
+	#  make our root pool and file system                                                                       
+	    GOT_ROOT=$( zpool list | grep $ROOT_POOL )                                                        
+    	    if [[ -z "${GOT_ROOT}" ]]                                                                                     
+    	    then                                                                                                        
+		zpool create -f "${ROOT_POOL}" $scdev                                                                
+		if [[ $? != 0 ]]                                                                                           
+		then                                                                                                     
+		    echo "Sorry, unable to create root pool with zpool options $scdev. Exiting now."                          
+	    	    exit 1                                                                                                
+		fi                                                                                                       
+	    else                                                                                                        
+		echo "Sorry ZFS pool \"${ROOT_POOL}\" already exists. Recreate it? [Yes|No]"                                      
+		while read answer 
+		do
+		case "$answer" in
+    		    Yes|yes|Y) 
+			sleep 2
+			# removing old pool
+			zpool destroy -f "${ROOT_POOL}"           
+			# creating new pool
+			zpool create -f "${ROOT_POOL}" $scdev                                                                
+			if [[ $? != 0 ]]                                                                                           
+			then                                                                                                     
+			    echo "Sorry, unable to create root pool with zpool options $scdev. Exiting now."                          
+	    		    exit 1                                                                                                
+			fi                                                                                                       
+			break
+		    ;;
+    		    No|no|N) 
+			echo "ZFS pool "${ROOT_POOL}" exists.You must destroy it before installing"
+    			exit 1
+		    ;;
+		    *)
+	    		echo "Choices are Yes, No"
+			continue
+		    ;;
+		    esac
+		done
+		                                                                                                   
+	    fi  
+	    # creating zfs filesystem
+    	    zfs set compression=on "$ROOT_POOL"   
+	    zfs create -p "${ROOT_POOL}/ROOT/${ROOT_FILESYSTEM}"                                                        
+	    ROOT_FS="${ROOT_POOL}/ROOT/${ROOT_FILESYSTEM}"                                                                   
+	fi                                                                                                            
+	
+							                                                                                                                    
+	zfs set mountpoint=legacy "$ROOT_FS"
+	
+	# making install directory
+	rm -rf "$ZFSROOT"
+	if [[ ! -d "$ZFSROOT" ]]                                                                                          
+	then                                                                                                          
+	    mkdir "$ZFSROOT"                                                                                             
+	else                                                                                                          
+    	    echo "Sorry "$ZFSROOT" already exists : exiting now in case we overwrite data"                              
+    	    exit 1                                                                                                     
+	fi           
+	mount -F zfs "$ROOT_FS" "$ZFSROOT"                                                                                
+	if [[ $? != 0 ]]                                                                                                
+	then                                                                                                          
+	    echo "Unable to mount ZFS root filesystem on "$ZFSROOT". Exiting now."                                       
+    	    exit 1                                                                                                     
+	fi                         
+
+	# pkg work here. Using dev repo due some errors with grub-0.95
+	pkg image-create -f -F -a opensolaris.org=http://pkg.opensolaris.org/dev/ "$ZFSROOT" 2>/dev/null >/dev/null
+	cd "$ZFSROOT"
+	pkg refresh 2>/dev/null >/dev/null
+	
+	# minimal packages list
+local PKGS
+PKGS="
+SUNWcsd
+SUNWcs
+SUNWcar
+SUNWcakr
+SUNWkvm
+SUNWos86r
+SUNWrmodr
+SUNWpsdcr
+SUNWpsdir
+SUNWcnetr
+SUNWesu
+SUNWkey
+SUNWnfsckr
+SUNWnfsc
+SUNWgss
+SUNWgssc
+SUNWbip
+SUNWbash
+SUNWloc
+SUNWsshcu
+SUNWsshd
+SUNWssh
+SUNWtoo
+SUNWzfskr
+SUNWipf
+SUNWipkg
+SUNWadmr
+SUNWadmap
+SUNWPython
+SUNWperl584core
+SUNWgrub
+entire
+"
+	# recognizing network card
+	IFACE=$(dladm show-link|sed -n '2p'|awk '{print $1}'|sed 's/0//')
+
+	for pkg in ${PKGS} 
+	do
+	    tput ed 
+	    echo "Installing ${pkg}"
+	    pkg install --no-index --no-refresh $pkg 2>/dev/null >/dev/null
+	    tput dl1
+	    tput cuu1
+	done
+
+	# seed the initial smf repository                                                                             
+	cp "$ZFSROOT"/lib/svc/seed/global.db "$ZFSROOT"/etc/svc/repository.db                                         
+	chmod 0600 "$ZFSROOT"/etc/svc/repository.db                                                                   
+	chown root:sys "$ZFSROOT"/etc/svc/repository.db                                                               
+    
+	# set timezone and nodename                                                                                                
+	echo "$TIMEZONE" > "$ZFSROOT"/etc/TIMEZONE                                                                    
+	echo "$HOSTNAME" > "$ZFSROOT"/etc/nodename                                                                                                               
+    
+	# setup smf profiles                                                                                          
+	ln -s ns_files.xml "$ZFSROOT"/var/svc/profile/name_service.xml                                                
+	ln -s generic_limited_net.xml "$ZFSROOT"/var/svc/profile/generic.xml                                          
+	ln -s inetd_generic.xml "$ZFSROOT"/var/svc/profile/inetd_services.xml                                         
+	ln -s platform_none.xml "$ZFSROOT"/var/svc/profile/platform.xml                                               
+
+	# Set the environment variables for svccfg.                                                                   
+	SVCCFG_DTD="${ZFSROOT}"/usr/share/lib/xml/dtd/service_bundle.dtd.1                                            
+	SVCCFG_REPOSITORY="${ZFSROOT}"/etc/svc/repository.db                                                          
+	SVCCFG=svccfg                                                                                       
+	export SVCCFG_DTD SVCCFG_REPOSITORY SVCCFG                                                                     
+	"${SVCCFG}" import "${ZFSROOT}"/var/svc/manifest/milestone/sysconfig.xml                                        
+	"${SVCCFG}" -s network/physical:default setprop general/enabled=false                                           
+	"${SVCCFG}" -s network/physical:nwam setprop general/enabled=true                 
+                                                                                                              
+	# mark the new system image as uninstalled                                                                    
+	sysidconfig -b "$ZFSROOT" -a /lib/svc/method/sshd                                                             
+	touch "$ZFSROOT"/etc/.UNCONFIGURED                                                                            
+                                                                                                              
+	# configure our new /etc/vfstab                                                                               
+	printf "${ROOT_FS}\t-\t/\tzfs\t-\tno\t-\n" >> "$ZFSROOT"/etc/vfstab                                     
+	chmod a+r "$ZFSROOT"/etc/vfstab                                                                               
+                                                                                                              
+	# turn off root as a role                                                                                     
+	printf "/^root::::type=role;\ns/^root::::type=role;/root::::/\nw" | ed -s "$ZFSROOT"/etc/user_attr 2>/dev/null >/dev/null                                                                               
+                                                                                                              
+	# delete the "jack" user                                                                                      
+	printf "/^jack:/d\nw" | ed -s "$ZFSROOT"/etc/passwd 2>/dev/null >/dev/null                                                           
+	chmod u+w "$ZFSROOT"/etc/shadow                                                                               
+	printf "/^jack:/d\nw" | ed -s "$ZFSROOT"/etc/shadow 2>/dev/null >/dev/null                                                          
+	chmod u-w "$ZFSROOT"/etc/shadow                                                                               
+                                                                                                              
+	# generate sshd keys                                                                          
+	ssh-keygen -t dsa -f "$ZFSROOT"/etc/ssh/ssh_host_dsa_key -N '' 2>/dev/null >/dev/null                                               
+	ssh-keygen -t rsa -f "$ZFSROOT"/etc/ssh/ssh_host_rsa_key -N '' 2>/dev/null >/dev/null        
+    
+	# configure /dev in the new image                                                                             
+	devfsadm -r "$ZFSROOT"                                                                                        
+	ln -s ../devices/pseudo/sysmsg@0:msglog "$ZFSROOT"/dev/msglog 2>/dev/null >/dev/null                                                
+                                                                                                              
+	mkdir -p /"$ROOT_POOL"/boot/grub
+
+	# create the new real grub menu                                                                               
+cat <<-EOF > /rpool/boot/grub/menu.lst
+default 0
+timeout 10
+
+title  OpenSolaris minimal 2008.11 
+bootfs rpool/ROOT/opensolaris
+kernel\$ /platform/i86pc/kernel/\$ISADIR/unix  -B \$ZFS-BOOTFS
+module\$ /platform/i86pc/\$ISADIR/boot_archive
+
+EOF
+
+	# make the grub menu files readable by everyone.                                                              
+	chmod a+r "$ZFSROOT"/boot/grub/menu.lst                                                                       
+	chmod a+r /"$ROOT_POOL"/boot/grub/menu.lst                                                                           
+            
+	echo "etc/zfs/zpool.cache" >> "$ZFSROOT"/boot/solaris/filelist.ramdisk
+	zpool set bootfs="$ROOT_FS" "$ROOT_POOL"
+    
+	mkdir -p /"$ROOT_POOL"/boot/grub
+                                                                                                      
+	# setup /etc/bootsign so that grub can find this zpool                                                        
+	mkdir -p /"$ROOT_POOL"/etc                                                                                           
+	echo pool_rpool > /"$ROOT_POOL"/etc/bootsign                                                                         
+
+	echo "Creating boot_archive"
+	bootadm update-archive -R "$ZFSROOT" 
+    
+	# grub installation
+	echo "Installing grub on $sbdev"
+	installgrub "$ZFSROOT"/boot/grub/stage1 "$ZFSROOT"/boot/grub/stage2 $sbdev
+    
+	umount -f "$ZFSROOT"                                                                                             
+    
+	# all done
+	echo "Minimal OpenSolaris installation is complete."
+
+}
+
+# main procedure
+main() {
+
+	clear
+	echo "Starting OSinstall script which installs minimal OpenSolaris over network" 
+	echo
+
+        # checking disks
+	HAVEDISK=$(echo q |format 2>&1 | egrep "[0-9]")                                                                            
+	if [[ -z "$HAVEDISK" ]]; then                                                                                                                                
+	    echo "No hard disk found."                              
+	    exit 1                                                                                                                                     
+	fi            
+	
+	# find target disk
+	echo "Found the following disks:" 
+	i=0
+	for item in $(echo q | format -e 2>&1 | egrep "c[0-9]+" | nawk '{ print $2 }')
+	do
+	    disk=/dev/rdsk/${item}p0
+	    DISKLIST[$i]=$item
+	    ((i++))
+	    fdisk -G $disk | tail -1 | nawk '{
+    		n=" '$i'"
+		disk="'$disk'"
+    		ncyl=$2
+		nhead=$5
+		nsect=$6
+		secsz=$7
+		sectors=ncyl*nhead*nsect;
+		bytes=sectors/(1024/secsz);
+		printf("%d %7d MB %s\n",n, bytes/1024, disk);
+	    }'
+	done
+
+	while read -p "On which disk do you want to install system: " choice
+	do                                                  
+	    if [[ -z "${choice}" ]]; then                                                                           
+		continue                                                                                      
+	    fi                                                                                                    
+	    if [[ $choice -eq 0 ]] || [[ $choice -gt $i ]]; then                                                      
+		echo "$i Invalid choice"                                                                         
+		continue                                                                                      
+	    fi                                                                                                    
+	    break                                                                                                 
+	done    
+
+	i=0                                                                                                      
+	for item in "${DISKLIST[@]}"
+	do				                                                                                                              
+	    ((i++))
+	    if [[ $choice -eq $i ]]; then
+		dev=${item}p0
+	    fi
+	done
+
+	if [[ ! -n "$dev" ]]; then                                                                                      
+	    echo "Sorry, no disks selected"                                 
+	    exit 1                                                                                                 
+	fi     
+
+	# check and create Solaris2 partition
+	if ! checkpart $dev; then                                               
+	    echo "No solaris partition found on $dev"
+	    echo "Use entire disk? (All data will be lost) [Yes|No]" 
+	    while read answer 
+	    do
+		case "$answer" in
+    		    Yes|yes|Y) 
+			fdisk -B /dev/rdsk/$disk           
+    			break
+		    ;;
+    		    No|no|N) 
+			echo "You must create solaris partition manually"
+			echo "Press any key to run fdisk"
+			read
+			fdisk /dev/rdsk/$disk           
+    			break
+		    ;;
+		    *)
+	    		echo "Choices are Yes, No"
+			continue
+		    ;;
+		esac
+	    done
+	fi
+	
+	# no partition
+	if ! checkpart $dev; then                                               
+	    echo "No solaris partition found on $dev, exiting"
+	    exit 1 
+	fi
+        
+	# check active partition                                                                            
+	partn=0
+	getpart $disk | while read  Id Act Bhead Bsect Bcyl Ehead Esect Ecyl Rsect Numsect
+	do 
+	    let partn=$partn+1 
+	    if [[ $Id == 191 ]]; then
+		echo $Numsect > "$NUMSECT"
+		if [ $Act != 128 ]; then
+		    echo 2 > "$SETACT"                                                                                     
+		    echo $partn >> "$SETACT"                                                                                  
+		    echo 5 >> "$SETACT"                                                                                     
+		fi
+	    fi
+	done	                    
+        
+	# check partition size                                                                     
+	numsect=$(cat "$NUMSECT")
+	rm -f "$NUMSECT"
+	psize=$(fdisk -G /dev/rdsk/$disk| tail -1 | awk "{print \$7*$numsect}")
+	let psize=$psize/1024/1024
+	if [[ "$psize" -lt "$MINIMAL_SIZE" ]];then
+	    echo "$psize Not enough free space. At least 1GB required"
+	fi                                                                                                
+
+	if [[ -f "$SETACT" ]]; then	
+	    echo "Partition is not active. Activate? [Yes|No]" 
+	    while read answer
+	    do
+		case "$answer" in
+    		    Yes|yes|Y] ) 
+			cat "$SETACT" | fdisk /dev/rdsk/$dev 2>&1 >/dev/null          
+			rm -f "$SETACT"
+    			break
+		    ;;
+    		    No|no|N] ) 
+			echo "You must activate partition before reboot"
+    			break
+		    ;;
+		    *)
+			echo "Choices are Yes, No"
+			continue
+		    ;;
+		esac
+	    done
+	fi	
+	rm -f "$SETACT"
+
+	echo "System will be installed on $dev. Continue? [Yes|No]"  
+	while read answer
+	do
+	    case "$answer" in
+    		Yes|yes|Y ) 
+		    zfsinstall $dev           
+    		    break
+		;;
+    		No|no|N) 
+		    echo "Bye!"
+		    exit 0           
+    		;;
+		*)
+		    echo "Choices are Yes, No"
+		    continue           
+		;;
+		esac
+	    done
+	exit 0
+}
+	
+	# call main procedure
+	main

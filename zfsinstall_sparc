@@ -1,0 +1,216 @@
+#!/usr/bin/ksh
+#
+# CDDL HEADER START
+#
+# The contents of this file are subject to the terms of the
+# Common Development and Distribution License (the "License").
+# You may not use this file except in compliance with the License.
+#
+# You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
+# or http://www.opensolaris.org/os/licensing.
+# See the License for the specific language governing permissions
+# and limitations under the License.
+#
+# When distributing Covered Code, include this CDDL HEADER in each
+# file and include the License file at usr/src/OPENSOLARIS.LICENSE.
+# If applicable, add the following below this CDDL HEADER, with the
+# fields enclosed by brackets "[]" replaced with your own identifying
+# information: Portions Copyright [yyyy] [name of copyright owner]
+#
+# CDDL HEADER END
+#
+# Copyright 2007 Sun Microsystems, Inc.  All rights reserved.
+# Use is subject to license terms.
+#
+# Script to install OpenSolaris from Sparc LiveCD 
+# Alexander Eremin, November 10 2009.
+#
+
+# Make sure only root can run our script
+if [ "$(id -u)" != "0" ]; then
+    echo "This script must be run as root" 
+    exit 1
+fi
+      
+
+# check arguments
+if [ "$#" -lt 1 ] || [ $1 == "-h" ] || [ $1 == "--help" ]
+then
+  echo "Usage : zfsinstall <root_slice> "
+  echo "eg. ./zfsinstall c0t0d0s0"
+  exit 1
+fi
+
+
+# change these to use different pool/fs names
+ROOT_POOL=opensolaris
+ROOT_FILESYSTEM=ROOT/opensolaris
+
+if [ -z "${ROOT_FS}" ]
+then
+  #  make our root pool and file system
+  GOT_ROOT=$( /usr/sbin/zpool list | grep $ROOT_POOL )
+  if [ -z "${GOT_ROOT}" ]
+  then
+     /usr/sbin/zpool create -f ${ROOT_POOL} $1
+     if [ $? != 0 ]
+     then
+        echo "Sorry, unable to create root pool with zpool options $1. Exiting now."
+        exit 1
+     fi
+  else
+     echo "Sorry ZFS pool \"${ROOT_POOL}\" already exists. Exiting now."
+     exit 1
+  fi
+  ROOT_FS="${ROOT_POOL}/${ROOT_FILESYSTEM}"
+fi
+
+ 
+if [ ! -d /zfsroot ]
+then
+   mkdir /zfsroot
+else
+   echo "Sorry /zfsroot already exists : exiting now in case we overwrite data."
+   exit 1
+fi
+
+/opt/install-test/bin/test_ti -c -t b -n $ROOT_POOL -p opensolaris 2>/dev/null >/dev/null
+
+zfs destroy ${ROOT_FS}/opt
+zfs destroy ${ROOT_FS}/usr
+zfs destroy ${ROOT_FS}/var
+
+beadm mount opensolaris /zfsroot
+
+if [ $? != 0 ]
+then
+   echo "Unable to mount ZFS root filesystem on /zfsroot. Exiting now."
+   exit 1
+fi
+
+# start copying main data over to it
+echo "Starting to copy data from UFS root to /zfsroot - this may take some time."
+cd /
+find . -xdev -depth -print | cpio -pudm /zfsroot 2>/dev/null >/dev/null
+mkdir -p /zfsroot/jack
+cd /jack
+find . -xdev -depth -print | cpio -pudm /zfsroot/jack 2>/dev/null >/dev/null
+mkdir -p /zfsroot/root
+cd /root
+find . -xdev -depth -print | cpio -pudm /zfsroot/root 2>/dev/null >/dev/null
+
+mkdir -p /zfsroot/usr
+cd /usr
+find . -xdev -depth -print | cpio -pudm /zfsroot/usr 2>/dev/null >/dev/null
+
+cd /etc
+find . -depth | cpio -pudm /zfsroot/etc 2>/dev/null >/dev/null
+
+cd /dev
+find . -depth | cpio -pudm /zfsroot/dev 2>/dev/null >/dev/null
+
+mkdir -p /zfsroot/devices
+cd /devices
+find . -depth | cpio -pudm /zfsroot/devices 2>/dev/null >/dev/null
+
+rm -rf /zfsroot/var/sadm/*
+cd /mnt/misc/var/sadm
+find . -xdev -depth -print | cpio -pudm /zfsroot/var/sadm 2>/dev/null >/dev/null
+
+rm -rf /zfsroot/var/pkg/*
+
+cd /mnt/misc/var/pkg
+find . -xdev -depth -print | cpio -pudm /zfsroot/var/pkg 2>/dev/null >/dev/null
+
+rm -rf /zfsroot/opt
+mkdir -p /zfsroot/opt
+cd /mnt/misc/opt
+find . -xdev -depth -print | cpio -pudm /zfsroot/opt 2>/dev/null >/dev/null
+
+rm -rf /zfsroot/mnt/*
+
+mkdir -p /zfsroot/system/object
+mkdir -p /zfsroot/system/contract
+mkdir -p /zfsroot/mnt
+mkdir -p /zfsroot/tmp
+mkdir -p /zfsroot/proc
+mkdir -p /zfsroot/var/run
+mkdir -p /zfsroot/dev/fd   
+touch /zfsroot/etc/mnttab                                                                                     
+touch /zfsroot/etc/dfs/sharetab 
+chmod 555 /zfsroot/system/object
+chmod 555 /zfsroot/system/contract
+chmod 555 /zfsroot/proc
+chmod 777 /zfsroot/tmp
+chmod 755 /zfsroot/etc/svc/volatile
+chmod 755 /zfsroot/var/run
+chmod 555 /zfsroot/dev/fd                                                                                     
+chmod 444 /zfsroot/etc/mnttab   
+chmod 755 /zfsroot/mnt
+chmod 755 /zfsroot/usr
+chmod 755 /zfsroot/jack
+chmod 755 /zfsroot/root
+chown -R jack /zfsroot/jack
+chown root /zfsroot/system/object                                                                             
+chown root /zfsroot/system/contract                                                                           
+chown root /zfsroot/proc                                                                                      
+chown root /zfsroot/tmp                                                                                       
+chown root /zfsroot/etc/svc/volatile                                                                          
+chown root /zfsroot/var/run                                                                                   
+chown root /zfsroot/dev/fd                                                                                    
+chown root /zfsroot/etc/mnttab                                                                                
+chgrp root /zfsroot/system/object                                                                             
+chgrp root /zfsroot/system/contract                                                                           
+chgrp sys /zfsroot/tmp                                                                                        
+chgrp sys /zfsroot/devices                                                                                        
+chgrp root /zfsroot/proc                                                                                      
+chgrp sys /zfsroot/etc/svc/volatile                                                                           
+chgrp sys /zfsroot/var/run                                                                                    
+chgrp root /zfsroot/dev/fd                                                                                    
+chgrp root /zfsroot/etc/mnttab     
+
+rm -rf /zfsroot/mnt/*
+
+# remove livecd services 
+rm -f /zfsroot/var/svc/manifest/system/filesystem/live-root-fs.xml
+rm -f /zfsroot/var/svc/manifest/system/filesystem/live-usr-fs.xml
+rm -f /zfsroot/var/svc/manifest/system/live-a11y.xml
+rm -f /zfsroot/var/svc/manifest/system/live-sysidtool.xml
+rm -f /zfsroot/var/svc/manifest/system/device/live-devices-local.xml
+
+mkdir -p /opensolaris/boot
+touch /opensolaris/boot/menu.lst
+mkdir -p /opensolaris/platform/`uname -m`
+
+cp /zfsroot/platform/`uname -m`/bootlst /opensolaris/platform/`uname -m`/
+
+# remove ramdisk options from /etc/system
+cat /zfsroot/etc/system |grep -v ramdisk > /tmp/system.new
+mv /tmp/system.new /zfsroot/etc/system
+
+cp /zfsroot/lib/svc/seed/global.db /zfsroot/etc/svc/repository.db      
+
+devfsadm -R /zfsroot
+
+
+ROOT_DSK=$(df -h / | tail -1 | awk '{print $1}')
+ROOT_RDSK=$(echo $ROOT_DSK | sed -e 's/dsk/rdsk/g')
+
+echo "Updating vfstab"
+echo "${ROOT_FS}	-	/	zfs	-	no	-"  >> /zfsroot/etc/vfstab
+
+# Update bootarchive, and set the bootfs property on the root pool
+echo "etc/zfs/zpool.cache" >> /zfsroot/boot/solaris/filelist.ramdisk
+zpool set bootfs=$ROOT_FS $ROOT_POOL
+# updating boot-archive"
+/usr/sbin/bootadm update-archive -R /zfsroot 
+
+echo "Installing zfs bootblk on /dev/rdsk/$1"
+/usr/sbin/installboot -F zfs /platform/`uname -m`/lib/fs/zfs/bootblk /dev/rdsk/$1
+
+beadm activate opensolaris
+
+echo "###################################################"
+echo
+echo "OpenSolaris now installed."
+

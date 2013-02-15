@@ -1,0 +1,110 @@
+#!/usr/bin/bash
+#
+# CDDL HEADER START
+#
+# The contents of this file are subject to the terms of the
+# Common Development and Distribution License (the "License").
+# You may not use this file except in compliance with the License.
+#
+# You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
+# or http://www.opensolaris.org/os/licensing.
+# See the License for the specific language governing permissions
+# and limitations under the License.
+#
+# When distributing Covered Code, include this CDDL HEADER in each
+# file and include the License file at usr/src/OPENSOLARIS.LICENSE.
+# If applicable, add the following below this CDDL HEADER, with the
+# fields enclosed by brackets "[]" replaced with your own identifying
+# information: Portions Copyright [yyyy] [name of copyright owner]
+#
+# CDDL HEADER END
+#
+# Copyright 2007 Sun Microsystems, Inc.  All rights reserved.
+# Use is subject to license terms.
+#
+# Script to install VMops
+# by Alexander R. Eremin <eremin@milax.org> 
+# August 2009.
+# 
+
+
+PATH=/sbin:/usr/sbin:/usr/bin:$PATH
+export PATH
+HOME=/usr/share/install
+ROOT_POOL=rootpool                                                                                                
+ROOT_FILESYSTEM=rootfs          
+ZFSROOT=/zfsroot/rootfs
+ROOTFS=rootpool/rootfs
+DISK=$1	
+
+	echo "Finishing install"
+	mkdir -p $ZFSROOT/system/object 
+	mkdir -p $ZFSROOT/system/contract 
+	mkdir -p $ZFSROOT/mnt 
+	mkdir -p $ZFSROOT/tmp 
+	mkdir -p $ZFSROOT/proc 
+	mkdir -p $ZFSROOT/var/run 
+	mkdir -p $ZFSROOT/dev/fd   
+	touch $ZFSROOT/etc/mnttab                                                                                      
+	touch $ZFSROOT/etc/dfs/sharetab  
+
+	chmod 555 $ZFSROOT/system/object 
+	chmod 555 $ZFSROOT/system/contract 
+	chmod 555 $ZFSROOT/proc 
+	chmod 777 $ZFSROOT/tmp 
+	chmod 755 $ZFSROOT/etc/svc/volatile 
+	chmod 755 $ZFSROOT/var/run 
+	chmod 555 $ZFSROOT/dev/fd                                                                                     
+	chmod 444 $ZFSROOT/etc/mnttab    
+	chmod 755 $ZFSROOT/mnt 
+	chmod 755 $ZFSROOT/usr 
+	chmod 755 $ZFSROOT/alex 
+	chmod 755 $ZFSROOT/root 
+	chown -R admin:adm $ZFSROOT/admin 
+	chown root $ZFSROOT/system/object                                                                              
+	chown root $ZFSROOT/system/contract                                                                            
+	chown root $ZFSROOT/proc                                                                                      
+	chown root $ZFSROOT/tmp                                                                                       
+	chown root $ZFSROOT/etc/svc/volatile                                                                           
+	chown root $ZFSROOT/var/run                                                                                   
+	chown root $ZFSROOT/dev/fd                                                                                    
+	chown root $ZFSROOT/etc/mnttab                                                                                 
+                                                                                                              
+	chgrp root $ZFSROOT/system/object                                                                              
+	chgrp root $ZFSROOT/system/contract                                                                            
+	chgrp sys $ZFSROOT/tmp                                                                                        
+	chgrp root $ZFSROOT/proc                                                                                      
+	chgrp sys $ZFSROOT/etc/svc/volatile                                                                           
+	chgrp sys $ZFSROOT/var/run                                                                                    
+	chgrp root $ZFSROOT/dev/fd                                                                                    
+	chgrp root $ZFSROOT/etc/mnttab      
+
+	# svc 
+	mv $ZFSROOT/lib/svc/method/fs-root.hd $ZFSROOT/lib/svc/method/fs-root 
+	  	
+
+	# copy vfstab
+	cp $HOME/vfstab $ZFSROOT/etc/vfstab
+
+
+	echo "Updating vfstab"
+	printf "${ROOT_FS}\t-\t/\tzfs\t-\tno\t-\n"  >> $ZFSROOT/etc/vfstab
+
+	# Update bootarchive, and set the bootfs property on the root pool
+	echo "etc/zfs/zpool.cache" >> $ZFSROOT/boot/solaris/filelist.ramdisk
+	#zpool set bootfs=$ROOT_FS $ROOT_POOL
+
+	echo "Creating boot_archive"
+	#mkdir $ZFSROOT/platform/i86pc/amd64 
+	/usr/sbin/bootadm update-archive -R $ZFSROOT 2>/dev/null >/dev/null
+
+	# Put a grub menu.lst into the root pool
+	mkdir -p /$ROOT_POOL/boot/grub 
+	cp $HOME/menu.lst /$ROOT_POOL/boot/grub 
+	cp /.cdrom/boot/grub/splash.xpm.gz $ZFSROOT/boot/grub 
+
+	# Now, work out from our arguments, which is a disk, installing grub on the
+	# 1st one that we find
+        echo "Installing grub on $DISK"
+	installgrub $ZFSROOT/boot/grub/stage1 $ZFSROOT/boot/grub/stage2 /dev/rdsk/$DISK 
+
